@@ -1,0 +1,11 @@
+CUDA BENCHMARK RESULTS
+==================================================
+
+ONNX Providers: ['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']
+
+Cold (43 chars):  5.2222s
+Warm (43 chars):  4.4598s
+Warm (267 chars): 19.0205s
+
+==================================================
+CUDA acceleration is ENABLED!
