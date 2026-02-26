@@ -33,6 +33,36 @@ def load_model():
     model = KittenTTS("KittenML/kitten-tts-mini-0.8")
     log_with_time("Model loaded successfully.")
 
+import re
+
+def phonetic_cleaner(text: str) -> str:
+    """Fixes common TTS pronunciation issues with contractions."""
+    # Mapping of common contractions to phonetic equivalents that sound better in KittenTTS
+    # This prevents her from saying "that-es" for "that's"
+    replacements = {
+        r"\bthat's\b": "thatz",
+        r"\bthat’s\b": "thatz",
+        r"\bit's\b": "itz",
+        r"\bit’s\b": "itz",
+        r"\bwhat's\b": "whatz",
+        r"\bwhat’s\b": "whatz",
+        r"\bhe's\b": "hez",
+        r"\bhe’s\b": "hez",
+        r"\bshe's\b": "shez",
+        r"\bshe’s\b": "shez",
+        r"\bthere's\b": "therez",
+        r"\bthere’s\b": "therez",
+        r"\bwho's\b": "whoz",
+        r"\bwho’s\b": "whoz",
+        r"\blet's\b": "letz",
+        r"\blet’s\b": "letz",
+    }
+    
+    cleaned = text
+    for pattern, replacement in replacements.items():
+        cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
+    return cleaned
+
 @app.post("/v1/audio/speech")
 async def create_speech(req: SpeechRequest):
     global model
@@ -64,6 +94,10 @@ async def create_speech(req: SpeechRequest):
             # Robustness: KittenTTS utility library crashes if input has no speakable characters (like just "...")
             # We filter it here and return a tiny silence instead of crashing the process.
             clean_text = req.input.strip()
+            
+            # Apply phonetic homogenization for better pronunciation
+            clean_text = phonetic_cleaner(clean_text)
+            
             if not any(c.isalnum() for c in clean_text):
                 log_with_time(f"Warning: Input '{clean_text}' has no speakable content. Returning silence.")
                 audio_data = np.zeros(1000, dtype=np.float32) # ~40ms of silence at 24kHz
