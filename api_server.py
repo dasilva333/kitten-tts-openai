@@ -63,45 +63,61 @@ async def create_speech(req: SpeechRequest):
 
     # Determine voice - forcing Kiki based on user request
     target_voice = "Kiki"
+    max_retries = 3
+    retry_delay = 0.5 # seconds
 
-    try:
-        start = time.perf_counter()
-        
-        # Determine if we need to chunk
-        if len(req.input) > 250:
-            sentences = chunk_text(req.input)
-            audio_chunks = []
-            for s in sentences:
-                audio_chunks.append(model.generate(s, voice=target_voice))
-            audio_data = np.concatenate(audio_chunks)
-        else:
-            audio_data = model.generate(req.input, voice=target_voice)
+    for attempt in range(max_retries):
+        try:
+            start = time.perf_counter()
             
-        end = time.perf_counter()
-        print(f"Generated speech in {end - start:.2f}s (Length: {len(req.input)}, Voice: {target_voice})")
-        
-        # Save to memory buffer
-        # soundfile natively supports WAV and OGG. We'll default to WAV for broader support.
-        # Fallback for opus/aac/mp3 to WAV or OGG since soundfile lacks native support for them 
-        # without external libs like ffmpeg.
-        
-        format_type = req.response_format.upper()
-        if format_type not in ["WAV", "OGG", "FLAC"]:
-            # Default fallback for mp3/opus/aac via soundfile
-            format_type = "WAV"
+            # Determine if we need to chunk
+            if len(req.input) > 250:
+                sentences = chunk_text(req.input)
+                audio_chunks = []
+                for s in sentences:
+                    # model.generate might fail due to CUDA/ONNX issues
+                    audio_chunks.append(model.generate(s, voice=target_voice))
+                audio_data = np.concatenate(audio_chunks)
+            else:
+                audio_data = model.generate(req.input, voice=target_voice)
+                
+            end = time.perf_counter()
+            print(f"Generated speech in {end - start:.2f}s (Length: {len(req.input)}, Voice: {target_voice})")
             
-        subtype = 'VORBIS' if format_type == 'OGG' else None
+            # Save to memory buffer
+            format_type = req.response_format.upper()
+            if format_type not in ["WAV", "OGG", "FLAC"]:
+                format_type = "WAV"
+                
+            subtype = 'VORBIS' if format_type == 'OGG' else None
+                
+            audio_buffer = io.BytesIO()
+            sf.write(audio_buffer, audio_data, 24000, format=format_type, subtype=subtype)
+            audio_buffer.seek(0)
             
-        audio_buffer = io.BytesIO()
-        sf.write(audio_buffer, audio_data, 24000, format=format_type, subtype=subtype)
-        audio_buffer.seek(0)
-        
-        media_type = f"audio/{format_type.lower()}"
-        return Response(content=audio_buffer.read(), media_type=media_type)
+            media_type = f"audio/{format_type.lower()}"
+            return Response(content=audio_buffer.read(), media_type=media_type)
 
-    except Exception as e:
-        print(f"Error during audio generation: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        except Exception as e:
+            error_msg = str(e)
+            print(f"Attempt {attempt + 1}/{max_retries} failed: {error_msg}")
+            
+            # If it's a CUDA/ONNX failure, we might want to wait a bit before retrying
+            if "CUDA" in error_msg or "ONNXRuntimeError" in error_msg:
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+                else:
+                    # Final attempt failed
+                    print(f"CRITICAL: Failed all {max_retries} attempts. Returning detailed error.")
+                    raise HTTPException(status_code=500, detail={
+                        "error": "Internal Server Error during TTS generation",
+                        "cause": error_msg,
+                        "suggestion": "Check GPU memory or consider switching to CPU execution."
+                    })
+            else:
+                # For non-CUDA errors, just raise immediately
+                raise HTTPException(status_code=500, detail=error_msg)
 
 if __name__ == "__main__":
     import uvicorn
