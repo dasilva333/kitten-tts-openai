@@ -36,31 +36,12 @@ def load_model():
 import re
 
 def phonetic_cleaner(text: str) -> str:
-    """Fixes common TTS pronunciation issues with contractions."""
-    # Mapping of common contractions to phonetic equivalents that sound better in KittenTTS
-    # This prevents her from saying "that-es" for "that's"
-    replacements = {
-        r"\bthat's\b": "thatz",
-        r"\bthat’s\b": "thatz",
-        r"\bit's\b": "itz",
-        r"\bit’s\b": "itz",
-        r"\bwhat's\b": "whatz",
-        r"\bwhat’s\b": "whatz",
-        r"\bhe's\b": "hez",
-        r"\bhe’s\b": "hez",
-        r"\bshe's\b": "shez",
-        r"\bshe’s\b": "shez",
-        r"\bthere's\b": "therez",
-        r"\bthere’s\b": "therez",
-        r"\bwho's\b": "whoz",
-        r"\bwho’s\b": "whoz",
-        r"\blet's\b": "letz",
-        r"\blet’s\b": "letz",
-    }
-    
-    cleaned = text
-    for pattern, replacement in replacements.items():
-        cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
+    """Fixes common TTS pronunciation issues with contractions using generalized regex."""
+    # Matches any word with 2+ letters followed by 's or ’s
+    # Example: "Kiki's" -> "Kikiz", "That's" -> "Thatz"
+    # We use a capturing group for the leading letters to preserve them.
+    pattern = r"(\b[a-zA-Z]{2,})['’]s\b"
+    cleaned = re.sub(pattern, r"\1z", text, flags=re.IGNORECASE)
     return cleaned
 
 def parse_narrative(text: str):
