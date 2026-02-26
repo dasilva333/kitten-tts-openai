@@ -63,15 +63,40 @@ def phonetic_cleaner(text: str) -> str:
         cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
     return cleaned
 
+def parse_narrative(text: str):
+    """
+    Splits text into chunks, identifying which ones are 'narrative' (wrapped in asterisks).
+    Returns a list of (text, is_narrative) tuples.
+    """
+    # Regex to find text between asterisks (greedy to avoid splitting multi-word actions)
+    # We use a non-capturing group with capturing parens around the asterisk blocks
+    # to preserve the split parts.
+    parts = re.split(r"(\*[^*]+\*)", text)
+    chunks = []
+    for p in parts:
+        if not p.strip():
+            continue
+        if p.startswith("*") and p.endswith("*"):
+            # It's narrative, strip asterisks
+            chunks.append((p.strip("*").strip(), True))
+        else:
+            # It's normal text
+            chunks.append((p.strip(), False))
+    return chunks
+
 @app.post("/v1/audio/speech")
 async def create_speech(req: SpeechRequest):
     global model
     if not model:
         raise HTTPException(status_code=503, detail="Model is still loading")
 
-    target_voice = "Kiki"
-    # User requested a 20% speed boost for testing.
-    speed_factor = req.speed * 1.2
+    # Base voices
+    VOICE_DIALOGUE = "Kiki"
+    VOICE_NARRATIVE = "Luna"
+    
+    # Base speeds
+    base_speed = req.speed * 1.2 # User's requested 20% boost
+    
     max_retries = 3
     retry_delay = 0.5 
 
@@ -80,7 +105,7 @@ async def create_speech(req: SpeechRequest):
     for attempt in range(max_retries):
         try:
             start = time.perf_counter()
-            log_with_time(f"Turn Handler: Processing request (Attempt {attempt + 1}/{max_retries}, Speed: {speed_factor:.2f})")
+            log_with_time(f"Turn Handler: Processing request (Attempt {attempt + 1}/{max_retries}, Base Speed: {base_speed:.2f})")
             
             # Use the global model instance
             if attempt > 0:
@@ -91,22 +116,36 @@ async def create_speech(req: SpeechRequest):
                 except Exception as reinit_err:
                     log_with_time(f"Self-healing failed: {str(reinit_err)}")
             
-            # Robustness: KittenTTS utility library crashes if input has no speakable characters (like just "...")
-            # We filter it here and return a tiny silence instead of crashing the process.
-            clean_text = req.input.strip()
+            # 1. Phonetic Homogenization (run on full text first to maintain context)
+            clean_input = phonetic_cleaner(req.input.strip())
             
-            # Apply phonetic homogenization for better pronunciation
-            clean_text = phonetic_cleaner(clean_text)
+            # 2. Narrative Parsing
+            segments = parse_narrative(clean_input)
             
-            if not any(c.isalnum() for c in clean_text):
-                log_with_time(f"Warning: Input '{clean_text}' has no speakable content. Returning silence.")
-                audio_data = np.zeros(1000, dtype=np.float32) # ~40ms of silence at 24kHz
+            if not segments:
+                log_with_time("Warning: No speakable content found. Returning silence.")
+                audio_data = np.zeros(1000, dtype=np.float32) 
             else:
-                # The library handles its own chunking at 400 chars, so we don't need manual splitting.
-                audio_data = model.generate(clean_text, voice=target_voice, speed=speed_factor)
+                audio_chunks = []
+                for text, is_narrative in segments:
+                    # Robustness check for each chunk
+                    if not any(c.isalnum() for c in text):
+                        continue
+                        
+                    voice = VOICE_NARRATIVE if is_narrative else VOICE_DIALOGUE
+                    # Narration is slightly slower (90% of base) for "internal monologue" feel
+                    speed = base_speed * 0.9 if is_narrative else base_speed
+                    
+                    log_with_time(f" Generating chunk: '{text[:30]}...' (Voice: {voice}, Speed: {speed:.2f})")
+                    audio_chunks.append(model.generate(text, voice=voice, speed=speed))
+                
+                if not audio_chunks:
+                    audio_data = np.zeros(1000, dtype=np.float32)
+                else:
+                    audio_data = np.concatenate(audio_chunks)
                 
             end = time.perf_counter()
-            log_with_time(f"Generated speech in {end - start:.2f}s (Length: {len(clean_text)}, Voice: {target_voice})")
+            log_with_time(f"Generated total speech in {end - start:.2f}s (Segments: {len(segments)})")
             
             # Save to memory buffer
             format_type = req.response_format.upper()
@@ -133,7 +172,7 @@ async def create_speech(req: SpeechRequest):
                 raise HTTPException(status_code=500, detail={
                     "error": "TTS Generation Failed",
                     "cause": last_error,
-                    "remedy": "Input sanitization should prevent most crashes. If this error persists, it may be an internal model hang. Please check server console."
+                    "remedy": "Input segments may have caused a processing error. Check the server console for chunk-level logs."
                 })
 
 if __name__ == "__main__":
