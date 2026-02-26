@@ -6,6 +6,7 @@ import time
 import io
 import soundfile as sf
 import numpy as np
+import datetime
 from kittentts import KittenTTS
 
 # OpenAI Schema
@@ -16,16 +17,9 @@ class SpeechRequest(BaseModel):
     response_format: Optional[Literal["mp3", "opus", "aac", "flac", "wav", "ogg"]] = "wav"
     speed: Optional[float] = 1.0
 
-# Voice Mapping from OpenAI -> KittenTTS (best effort)
-# KittenTTS voices: ['Bella', 'Jasper', 'Luna', 'Bruno', 'Rosie', 'Hugo', 'Kiki', 'Leo']
-VOICE_MAP = {
-    "alloy": "Jasper",
-    "echo": "Bruno",
-    "fable": "Hugo",
-    "onyx": "Leo",
-    "nova": "Bella",
-    "shimmer": "Luna",
-}
+def log_with_time(msg):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    print(f"[{timestamp}] {msg}")
 
 app = FastAPI(title="KittenTTS OpenAI API")
 
@@ -35,31 +29,9 @@ model = None
 @app.on_event("startup")
 def load_model():
     global model
-    print("Loading KittenTTS 80M model...")
+    log_with_time("Loading KittenTTS 80M model...")
     model = KittenTTS("KittenML/kitten-tts-mini-0.8")
-    print("Model loaded successfully.")
-
-def chunk_text(text: str) -> list[str]:
-    """Splits text into sentences to avoid ONNX max sequence length limits."""
-    # simple split by punctuation
-    sentences = []
-    current_sentence = ""
-    for char in text:
-        current_sentence += char
-        if char in ['.', '!', '?'] and len(current_sentence.strip()) > 0:
-            sentences.append(current_sentence.strip())
-            current_sentence = ""
-    
-    if current_sentence.strip():
-        sentences.append(current_sentence.strip())
-        
-    return sentences if sentences else [text]
-
-import datetime
-
-def log_with_time(msg):
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    print(f"[{timestamp}] {msg}")
+    log_with_time("Model loaded successfully.")
 
 @app.post("/v1/audio/speech")
 async def create_speech(req: SpeechRequest):
@@ -69,7 +41,6 @@ async def create_speech(req: SpeechRequest):
 
     target_voice = "Kiki"
     # User requested a 20% speed boost for testing.
-    # Default is 1.0, so 1.2 is 20% faster.
     speed_factor = req.speed * 1.2
     max_retries = 3
     retry_delay = 0.5 
@@ -90,18 +61,18 @@ async def create_speech(req: SpeechRequest):
                 except Exception as reinit_err:
                     log_with_time(f"Self-healing failed: {str(reinit_err)}")
             
-            # Determine if we need to chunk
-            if len(req.input) > 250:
-                sentences = chunk_text(req.input)
-                audio_chunks = []
-                for s in sentences:
-                    audio_chunks.append(model.generate(s, voice=target_voice, speed=speed_factor))
-                audio_data = np.concatenate(audio_chunks)
+            # Robustness: KittenTTS utility library crashes if input has no speakable characters (like just "...")
+            # We filter it here and return a tiny silence instead of crashing the process.
+            clean_text = req.input.strip()
+            if not any(c.isalnum() for c in clean_text):
+                log_with_time(f"Warning: Input '{clean_text}' has no speakable content. Returning silence.")
+                audio_data = np.zeros(1000, dtype=np.float32) # ~40ms of silence at 24kHz
             else:
-                audio_data = model.generate(req.input, voice=target_voice, speed=speed_factor)
+                # The library handles its own chunking at 400 chars, so we don't need manual splitting.
+                audio_data = model.generate(clean_text, voice=target_voice, speed=speed_factor)
                 
             end = time.perf_counter()
-            log_with_time(f"Generated speech in {end - start:.2f}s (Length: {len(req.input)}, Voice: {target_voice})")
+            log_with_time(f"Generated speech in {end - start:.2f}s (Length: {len(clean_text)}, Voice: {target_voice})")
             
             # Save to memory buffer
             format_type = req.response_format.upper()
@@ -128,7 +99,7 @@ async def create_speech(req: SpeechRequest):
                 raise HTTPException(status_code=500, detail={
                     "error": "TTS Generation Failed",
                     "cause": last_error,
-                    "remedy": "The server attempted self-healing and retries but could not recover. Please check server logs or restart the process if this persists."
+                    "remedy": "Input sanitization should prevent most crashes. If this error persists, it may be an internal model hang. Please check server console."
                 })
 
 if __name__ == "__main__":
