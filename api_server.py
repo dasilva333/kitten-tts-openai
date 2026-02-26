@@ -68,6 +68,9 @@ async def create_speech(req: SpeechRequest):
         raise HTTPException(status_code=503, detail="Model is still loading")
 
     target_voice = "Kiki"
+    # User requested a 20% speed boost for testing.
+    # Default is 1.0, so 1.2 is 20% faster.
+    speed_factor = req.speed * 1.2
     max_retries = 3
     retry_delay = 0.5 
 
@@ -76,7 +79,7 @@ async def create_speech(req: SpeechRequest):
     for attempt in range(max_retries):
         try:
             start = time.perf_counter()
-            log_with_time(f"Turn Handler: Processing request (Attempt {attempt + 1}/{max_retries})")
+            log_with_time(f"Turn Handler: Processing request (Attempt {attempt + 1}/{max_retries}, Speed: {speed_factor:.2f})")
             
             # Use the global model instance
             if attempt > 0:
@@ -92,10 +95,10 @@ async def create_speech(req: SpeechRequest):
                 sentences = chunk_text(req.input)
                 audio_chunks = []
                 for s in sentences:
-                    audio_chunks.append(model.generate(s, voice=target_voice))
+                    audio_chunks.append(model.generate(s, voice=target_voice, speed=speed_factor))
                 audio_data = np.concatenate(audio_chunks)
             else:
-                audio_data = model.generate(req.input, voice=target_voice)
+                audio_data = model.generate(req.input, voice=target_voice, speed=speed_factor)
                 
             end = time.perf_counter()
             log_with_time(f"Generated speech in {end - start:.2f}s (Length: {len(req.input)}, Voice: {target_voice})")
