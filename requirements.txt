@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pydantic
+soundfile
+numpy
+kittentts
+onnxruntime-gpu
+requests
